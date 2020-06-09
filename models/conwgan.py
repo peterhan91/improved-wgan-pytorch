@@ -2,7 +2,7 @@ from torch import nn
 from torch.autograd import grad
 import torch
 DIM=64
-OUTPUT_DIM=64*64*3
+OUTPUT_DIM=64*64*1
 
 class MyConvo2d(nn.Module):
     def __init__(self, input_dim, output_dim, kernel_size, he_init = True,  stride = 1, bias = True):
@@ -83,12 +83,16 @@ class ResidualBlock(nn.Module):
         self.resample = resample
         self.bn1 = None
         self.bn2 = None
-        self.relu1 = nn.ReLU()
-        self.relu2 = nn.ReLU()
+        self.relu1 = None
+        self.relu2 = None
         if resample == 'down':
+            self.relu1 = nn.LeakyReLU(negative_slope=0.2)
+            self.relu2 = nn.LeakyReLU(negative_slope=0.2)
             self.bn1 = nn.LayerNorm([input_dim, hw, hw])
             self.bn2 = nn.LayerNorm([input_dim, hw, hw])
         elif resample == 'up':
+            self.relu1 = nn.ReLU()
+            self.relu2 = nn.ReLU()
             self.bn1 = nn.BatchNorm2d(input_dim)
             self.bn2 = nn.BatchNorm2d(output_dim)
         elif resample == None:
@@ -162,19 +166,20 @@ class FCGenerator(nn.Module):
         return output
 
 class GoodGenerator(nn.Module):
-    def __init__(self, dim=DIM,output_dim=OUTPUT_DIM):
+    def __init__(self, dim=DIM, output_dim=OUTPUT_DIM):
         super(GoodGenerator, self).__init__()
 
         self.dim = dim
 
-        self.ln1 = nn.Linear(128, 4*4*8*self.dim)
-        self.rb1 = ResidualBlock(8*self.dim, 8*self.dim, 3, resample = 'up')
-        self.rb2 = ResidualBlock(8*self.dim, 4*self.dim, 3, resample = 'up')
-        self.rb3 = ResidualBlock(4*self.dim, 2*self.dim, 3, resample = 'up')
-        self.rb4 = ResidualBlock(2*self.dim, 1*self.dim, 3, resample = 'up')
-        self.bn  = nn.BatchNorm2d(self.dim)
+        self.ln1 = nn.Linear(128, 4*4*8*self.dim) # (8*64, 4, 4)
+        self.rb1 = ResidualBlock(8*self.dim, 8*self.dim, 3, resample = 'up') # (8*64, 8, 8)
+        self.rb2 = ResidualBlock(8*self.dim, 4*self.dim, 3, resample = 'up') # (4*64, 16, 16)
+        self.rb3 = ResidualBlock(4*self.dim, 2*self.dim, 3, resample = 'up') # (2*64, 32, 32)
+        self.rb4 = ResidualBlock(2*self.dim, 1*self.dim, 3, resample = 'up') # (64, 64, 64)
+        self.rb5 = ResidualBlock(1*self.dim, int(0.5*self.dim), 3, resample = 'up') # (32, 128, 128)
+        self.bn  = nn.BatchNorm2d(int(0.5*self.dim))
 
-        self.conv1 = MyConvo2d(1*self.dim, 3, 3)
+        self.conv1 = MyConvo2d(int(0.5*self.dim), 1, 3) # (1, 64, 64)
         self.relu = nn.ReLU()
         self.tanh = nn.Tanh()
 
@@ -185,12 +190,14 @@ class GoodGenerator(nn.Module):
         output = self.rb2(output)
         output = self.rb3(output)
         output = self.rb4(output)
+        output = self.rb5(output)
 
         output = self.bn(output)
         output = self.relu(output)
         output = self.conv1(output)
         output = self.tanh(output)
         output = output.view(-1, OUTPUT_DIM)
+        # print(output.shape)
         return output
 
 class GoodDiscriminator(nn.Module):
@@ -199,7 +206,8 @@ class GoodDiscriminator(nn.Module):
 
         self.dim = dim
         self.num_class = num_class
-        self.conv1 = MyConvo2d(3, self.dim, 3, he_init = False)
+        self.conv1 = MyConvo2d(1, int(0.5*self.dim), 3, he_init = False)
+        self.rb0 = ResidualBlock(int(0.5*self.dim), self.dim, 3, resample = 'down', hw=DIM*2)
         self.rb1 = ResidualBlock(self.dim, 2*self.dim, 3, resample = 'down', hw=DIM)
         self.rb2 = ResidualBlock(2*self.dim, 4*self.dim, 3, resample = 'down', hw=int(DIM/2))
         self.rb3 = ResidualBlock(4*self.dim, 8*self.dim, 3, resample = 'down', hw=int(DIM/4))
@@ -210,12 +218,13 @@ class GoodDiscriminator(nn.Module):
 
     def forward(self, input):
         output = input.contiguous()
-        output = output.view(-1, 3, DIM, DIM)
-        output = self.conv1(output)
-        output = self.rb1(output)
-        output = self.rb2(output)
-        output = self.rb3(output)
-        output = self.rb4(output)
+        output = output.view(-1, 1, DIM*2, DIM*2)  # (1, 128, 128)
+        output = self.conv1(output) # (32, 128, 128)
+        output = self.rb0(output)   # (1*64, 64, 64)
+        output = self.rb1(output)   # (2*64, 32, 32)
+        output = self.rb2(output)   # (4*64, 16, 16)
+        output = self.rb3(output)   # (8*64, 8, 8)
+        output = self.rb4(output)   # (8*64, 4, 4)
         output = output.view(-1, 4*4*8*self.dim)
         output_wgan = self.ln1(output)
         output_wgan = output_wgan.view(-1)

@@ -1,7 +1,7 @@
 from pathlib import Path
 from collections import OrderedDict
 
-import gpustat
+# import gpustat
 import torch
 from torch import autograd
 import torch.nn.init as init
